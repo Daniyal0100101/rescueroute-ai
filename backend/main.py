@@ -111,10 +111,9 @@ def get_ai_decision():
             f.write(json.dumps(log_entry) + "\n")
     except (IOError, OSError) as e:
         logger.error(f"Failed to write AI decision log: {e}")
-        raise HTTPException(status_code=500, detail="Failed to log AI decision")
+        # Continue despite logging failure - decision is still valid
 
     return decision
-
 
 @app.get("/api/v1/state", response_model=SimulationState)
 def get_simulation_state():
