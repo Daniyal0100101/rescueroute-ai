@@ -6,8 +6,8 @@ import RobotList from "./RobotList";
 
 // Define types locally for now, should mirror backend
 interface Robot {
-  id: str;
-  status: str;
+  id: string;
+  status: string;
   battery: number;
   position: [number, number];
 }
