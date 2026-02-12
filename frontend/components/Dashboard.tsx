@@ -43,12 +43,27 @@ interface Metrics {
   total_battery_used: number;
 }
 
+interface Reassignment {
+  robot_id: string;
+  new_mission_id: string;
+}
+
+interface Decision {
+  priority_mission_id: string | null;
+  reassignments: Reassignment[];
+  reasoning: string;
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<SimulationState | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [aiDecision, setAiDecision] = useState<Decision | null>(null);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   useEffect(() => {
-    const fetchData = async () => {
+    // Initial fetch for immediate data
+    const fetchInitialData = async () => {
       try {
         const [stateRes, metricsRes] = await Promise.all([
             fetch("http://localhost:8000/api/v1/state"),
@@ -65,27 +80,121 @@ export default function Dashboard() {
             setMetrics(jsonMetrics);
         }
       } catch (error) {
-        console.error("Failed to fetch simulation data:", error);
+        console.error("Failed to fetch initial data:", error);
       }
     };
 
-    // Initial fetch
-    fetchData();
+    fetchInitialData();
 
-    const interval = setInterval(fetchData, 1000); // Poll every second
-    return () => clearInterval(interval);
+    // SSE Setup
+    const eventSource = new EventSource("http://localhost:8000/api/v1/stream");
+
+    eventSource.onopen = () => {
+        console.log("SSE Connection Opened");
+    };
+
+    eventSource.onmessage = (event) => {
+        try {
+            const parsedData = JSON.parse(event.data);
+            setData(parsedData);
+            
+            // Also fetch metrics when we get a state update
+            fetch("http://localhost:8000/api/v1/metrics")
+                .then(res => res.json())
+                .then(m => setMetrics(m))
+                .catch(e => console.error("Error fetching metrics:", e));
+
+        } catch (e) {
+            console.error("Error parsing SSE data:", e);
+        }
+    };
+
+    eventSource.onerror = () => {
+        console.warn("SSE connection lost. Reconnecting in 3s...");
+        eventSource.close();
+        setTimeout(() => {
+            // The component will re-mount and create a new EventSource
+        }, 3000);
+    };
+
+    return () => {
+        eventSource.close();
+    };
   }, []);
+
+  const handleAiCommand = async () => {
+    setIsAiLoading(true);
+    setAiError(null);
+    try {
+        const res = await fetch("http://localhost:8000/api/v1/ai/decide", { method: "POST" });
+        if (res.ok) {
+            const decision = await res.json();
+            setAiDecision(decision);
+        } else {
+            const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+            setAiError(err.detail || "AI request failed");
+        }
+    } catch (e) {
+        setAiError("Cannot reach backend. Is the server running?");
+    } finally {
+        setIsAiLoading(false);
+    }
+  };
 
   if (!data) return <div className="p-8 text-center text-gray-500">Loading RescueRoute AI Simulation...</div>;
 
   return (
     <div className="flex flex-col gap-6 w-full max-w-7xl mx-auto p-4">
-      <header className="mb-2">
-        <h1 className="text-3xl font-bold text-gray-800 dark:text-white">RescueRoute AI Dashboard</h1>
-        <p className="text-gray-500">Fleet Management & Mission Control</p>
+      <header className="mb-2 flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-800 dark:text-white">RescueRoute AI Dashboard</h1>
+          <p className="text-gray-500">Fleet Management & Mission Control</p>
+        </div>
+        <button 
+            onClick={handleAiCommand}
+            disabled={isAiLoading}
+            className={`px-6 py-3 rounded-lg font-bold text-white shadow-lg transition-all ${
+                isAiLoading ? "bg-purple-400 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-700 hover:scale-105"
+            }`}
+        >
+            {isAiLoading ? "Analyzing..." : "AI Commander: DECIDE"}
+        </button>
       </header>
 
       {metrics && <MetricsPanel metrics={metrics} />}
+      
+      {aiError && (
+         <div className="bg-red-900/30 border border-red-500/50 p-4 rounded-lg">
+            <p className="text-red-400 font-semibold">⚠️ AI Error: {aiError}</p>
+         </div>
+      )}
+
+      {aiDecision && (
+         <div className="bg-purple-900/30 border border-purple-500/40 p-4 rounded-lg shadow-lg backdrop-blur-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-2xl">🤖</span>
+              <h3 className="text-purple-300 font-bold text-lg">AI Commander Orders</h3>
+            </div>
+            <p className="text-gray-300 mb-3"><strong className="text-purple-300">Reasoning:</strong> {aiDecision.reasoning}</p>
+            {aiDecision.priority_mission_id && (
+                <div className="bg-red-900/30 border border-red-500/30 rounded-md px-3 py-2 inline-block">
+                  <span className="text-red-400 font-bold text-sm">🎯 Priority Target: {aiDecision.priority_mission_id}</span>
+                </div>
+            )}
+            {aiDecision.reassignments.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-purple-300 font-semibold text-sm mb-1">Reassignments:</p>
+                  <ul className="space-y-1">
+                    {aiDecision.reassignments.map((r, i) => (
+                        <li key={i} className="text-sm text-gray-400 bg-gray-800/50 rounded px-2 py-1">
+                          🔄 Robot <span className="text-white font-semibold">{r.robot_id}</span> → Mission <span className="text-amber-400 font-semibold">{r.new_mission_id}</span>
+                        </li>
+                    ))}
+                  </ul>
+                </div>
+            )}
+         </div>
+      )}
 
       <div className="flex flex-col lg:flex-row gap-6">
         <div className="flex-1 flex flex-col gap-6">
@@ -117,6 +226,7 @@ export default function Dashboard() {
                 {data.active_missions?.map(m => (
                     <p key={m.id}>[MISSION] {m.id} assigned to {m.assigned_robot || 'pending'}</p>
                 ))}
+                {aiDecision && <p className="text-purple-400">[AI] New orders received</p>}
             </div>
           </div>
         </div>

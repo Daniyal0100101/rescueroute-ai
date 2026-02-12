@@ -15,11 +15,13 @@ OBSTACLES = [[2, 2], [3, 3], [4, 4], [5, 5], [5, 6]]
 class Robot:
     def __init__(self, id, start_pos):
         self.id = id
+        self.start_pos = list(start_pos)
         self.position = list(start_pos)
         self.battery = 100.0
-        self.status = "IDLE"  # IDLE, MOVING, CHARGING, BUSY
+        self.status = "IDLE"  # IDLE, MOVING, CHARGING, DEAD
         self.current_mission = None
         self.target = None
+        self.dead_timer = 0
 
     def move_towards(self, target):
         if self.battery <= 0:
@@ -60,11 +62,36 @@ class Robot:
             self.battery -= 2.0
 
     def update(self):
-        # Scenario 2: Low battery
-        if self.battery < 20 and self.status != "CHARGING":
-            self.target = CHARGING_STATIONS[0]  # Go to first CS for simplicity
+        # Dead robot recovery: after 3 steps, revive with minimal battery
+        if self.status == "DEAD":
+            self.dead_timer += 1
+            if self.dead_timer >= 3:
+                self.battery = 5.0
+                self.dead_timer = 0
+                self.position = list(self.start_pos)
+                self.target = CHARGING_STATIONS[0]
+                self.status = "MOVING"
+                self.current_mission = None
+                print(f"Robot {self.id} recovered! Heading to charging station.")
+            return
+
+        # Low battery: return to charge at 30% threshold
+        if self.battery < 30 and self.status not in ("CHARGING", "DEAD"):
+            # Find closest charging station
+            closest_cs = min(
+                CHARGING_STATIONS,
+                key=lambda cs: abs(cs[0] - self.position[0])
+                + abs(cs[1] - self.position[1]),
+            )
+            self.target = closest_cs
             self.status = "MOVING"
-            print(f"Robot {self.id} Low Battery! Returning to base.")
+            if self.current_mission:
+                self.current_mission["status"] = "PENDING"
+                self.current_mission["assigned_robot"] = None
+                self.current_mission = None
+            print(
+                f"Robot {self.id} Low Battery ({self.battery:.0f}%)! Returning to charge."
+            )
 
         if self.status == "CHARGING":
             self.battery = min(100, self.battery + 10)
