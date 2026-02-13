@@ -6,7 +6,7 @@ class RobotState(BaseModel):
     id: str
     position: Tuple[int, int]
     battery: float
-    status: str  # "IDLE", "MOVING", "CHARGING"
+    status: str  # "IDLE", "MOVING", "CHARGING", "DEAD"
     current_mission: Optional[str] = None
 
 
@@ -30,6 +30,8 @@ class Metrics(BaseModel):
     completed_missions: int
     avg_delivery_time: float
     total_battery_used: float
+    fleet_battery: float = 0.0
+    total_distance_traveled: float = 0.0
 
 
 class SimulationState(BaseModel):
@@ -37,4 +39,4 @@ class SimulationState(BaseModel):
     robots: List[RobotState]
     grid: MapGrid
     active_missions: List[Mission]
-    completed_missions: List[Mission] = []  # Track completed missions for metrics
+    completed_missions: List[Mission] = []

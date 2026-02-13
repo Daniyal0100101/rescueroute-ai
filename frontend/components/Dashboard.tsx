@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import MapVisualizer from "./MapVisualizer";
 import RobotList from "./RobotList";
 import MetricsPanel from "./MetricsPanel";
 import MissionQueue from "./MissionQueue";
 
-// Define types locally for now, should mirror backend
+const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+
 interface Robot {
   id: string;
   status: string;
@@ -23,9 +24,9 @@ interface MapGrid {
 
 interface Mission {
   id: string;
-  priority: 'High' | 'Medium' | 'Low';
+  priority: "High" | "Medium" | "Low";
   target: [number, number];
-  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
+  status: "PENDING" | "IN_PROGRESS" | "COMPLETED";
   assigned_robot: string | null;
 }
 
@@ -34,6 +35,7 @@ interface SimulationState {
   robots: Robot[];
   grid: MapGrid;
   active_missions: Mission[];
+  completed_missions?: Mission[];
 }
 
 interface Metrics {
@@ -41,6 +43,8 @@ interface Metrics {
   completed_missions: number;
   avg_delivery_time: number;
   total_battery_used: number;
+  fleet_battery?: number;
+  total_distance_traveled?: number;
 }
 
 interface Reassignment {
@@ -54,6 +58,15 @@ interface Decision {
   reasoning: string;
 }
 
+function nowTime(): string {
+  return new Date().toLocaleTimeString("en-US", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<SimulationState | null>(null);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
@@ -61,63 +74,106 @@ export default function Dashboard() {
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [eventLogs, setEventLogs] = useState<string[]>([]);
+
+  const previousStepRef = useRef<number | null>(null);
+  const previousMissionStatusRef = useRef<Record<string, string>>({});
+
+  const appendLog = (entry: string) => {
+    setEventLogs((prev) => [`${nowTime()}  ${entry}`, ...prev].slice(0, 20));
+  };
 
   useEffect(() => {
-    // Initial fetch for immediate data
     const fetchInitialData = async () => {
       try {
-        const [stateRes, metricsRes] = await Promise.all([
-            fetch("http://localhost:8000/api/v1/state"),
-            fetch("http://localhost:8000/api/v1/metrics")
+        const [stateResult, metricsResult] = await Promise.allSettled([
+          fetch(`${API_BASE}/api/v1/state`),
+          fetch(`${API_BASE}/api/v1/metrics`),
         ]);
 
-        if (stateRes.ok) {
-            const jsonData = await stateRes.json();
-            setData(jsonData);
+        if (stateResult.status === "fulfilled" && stateResult.value.ok) {
+          const jsonData = await stateResult.value.json();
+          setData(jsonData);
+          setConnectionError(null);
         }
-        
-        if (metricsRes.ok) {
-            const jsonMetrics = await metricsRes.json();
-            setMetrics(jsonMetrics);
+
+        if (metricsResult.status === "fulfilled" && metricsResult.value.ok) {
+          const jsonMetrics = await metricsResult.value.json();
+          setMetrics(jsonMetrics);
+        }
+
+        if (
+          stateResult.status === "rejected" ||
+          (stateResult.status === "fulfilled" && !stateResult.value.ok)
+        ) {
+          setConnectionError(`Cannot reach backend at ${API_BASE}`);
+          appendLog(`ERROR Backend unreachable at ${API_BASE}`);
         }
       } catch (error) {
         console.error("Failed to fetch initial data:", error);
+        setConnectionError(`Cannot reach backend at ${API_BASE}`);
+        appendLog("ERROR Initial API request failed");
       }
     };
 
     fetchInitialData();
 
-    // SSE Setup
-    const eventSource = new EventSource("http://localhost:8000/api/v1/stream");
+    const eventSource = new EventSource(`${API_BASE}/api/v1/stream`);
 
     eventSource.onopen = () => {
-        console.log("SSE Connection Opened");
+      setConnectionError(null);
+      appendLog(`INFO Stream connected to ${API_BASE}`);
     };
 
     eventSource.onmessage = (event) => {
-        try {
-            const parsedData = JSON.parse(event.data);
-            setData(parsedData);
-            
-            // Also fetch metrics when we get a state update
-            fetch("http://localhost:8000/api/v1/metrics")
-                .then(res => res.json())
-                .then(m => setMetrics(m))
-                .catch(e => console.error("Error fetching metrics:", e));
+      try {
+        const parsedData: SimulationState = JSON.parse(event.data);
+        setData(parsedData);
 
-        } catch (e) {
-            console.error("Error parsing SSE data:", e);
+        if (previousStepRef.current === null) {
+          appendLog(`INFO First simulation snapshot received (step ${parsedData.step})`);
+        } else if (parsedData.step > previousStepRef.current) {
+          appendLog(
+            `TICK Step ${parsedData.step} | Robots ${parsedData.robots.length} | Open missions ${parsedData.active_missions.length}`
+          );
         }
+        previousStepRef.current = parsedData.step;
+
+        const missionStatusMap: Record<string, string> = {};
+        const missions = [...parsedData.active_missions, ...(parsedData.completed_missions ?? [])];
+        missions.forEach((mission) => {
+          missionStatusMap[mission.id] = mission.status;
+          const previous = previousMissionStatusRef.current[mission.id];
+          if (previous && previous !== mission.status) {
+            appendLog(`MISSION ${mission.id} changed ${previous} -> ${mission.status}`);
+          }
+        });
+        previousMissionStatusRef.current = missionStatusMap;
+
+        fetch(`${API_BASE}/api/v1/metrics`)
+          .then((res) => (res.ok ? res.json() : null))
+          .then((payload) => {
+            if (payload) setMetrics(payload);
+          })
+          .catch((err) => {
+            console.error("Error fetching metrics:", err);
+          });
+      } catch (error) {
+        console.error("Error parsing SSE data:", error);
+        appendLog("ERROR Invalid stream payload");
+      }
     };
 
     eventSource.onerror = () => {
-        console.warn("SSE connection lost. Reconnecting in 3s...");
-        eventSource.close();
-        setTimeout(() => setReconnectAttempt(n => n + 1), 3000);
+      setConnectionError(`Stream disconnected from ${API_BASE}`);
+      appendLog("WARN Stream disconnected; retrying in 3s");
+      eventSource.close();
+      setTimeout(() => setReconnectAttempt((n) => n + 1), 3000);
     };
 
     return () => {
-        eventSource.close();
+      eventSource.close();
     };
   }, [reconnectAttempt]);
 
@@ -125,110 +181,193 @@ export default function Dashboard() {
     setIsAiLoading(true);
     setAiError(null);
     try {
-        const res = await fetch("http://localhost:8000/api/v1/ai/decide", { method: "POST" });
-        if (res.ok) {
-            const decision = await res.json();
-            setAiDecision(decision);
-        } else {
-            const err = await res.json().catch(() => ({ detail: "Unknown error" }));
-            setAiError(err.detail || "AI request failed");
-        }
-    } catch (e) {
-        setAiError("Cannot reach backend. Is the server running?");
+      const res = await fetch(`${API_BASE}/api/v1/ai/decide`, { method: "POST" });
+      if (res.ok) {
+        const decision = await res.json();
+        setAiDecision(decision);
+        appendLog("AI Decision received");
+      } else {
+        const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+        setAiError(err.detail || "AI request failed");
+        appendLog(`ERROR AI command failed: ${err.detail || "Unknown error"}`);
+      }
+    } catch {
+      const message = `Cannot reach backend at ${API_BASE}. Is the server running?`;
+      setAiError(message);
+      appendLog(`ERROR ${message}`);
     } finally {
-        setIsAiLoading(false);
+      setIsAiLoading(false);
     }
   };
 
-  if (!data) return <div className="p-8 text-center text-gray-500">Loading RescueRoute AI Simulation...</div>;
+  if (!data) {
+    return (
+      <div className="mx-auto flex w-full min-w-0 max-w-[1400px] flex-col gap-5 overflow-x-hidden px-3 py-4 sm:gap-6 sm:px-4 sm:py-6 lg:px-6">
+        <header className="flex flex-col gap-4 rounded-xl border border-slate-800 bg-slate-950/70 p-5 shadow-[0_8px_30px_rgba(2,6,23,0.6)] backdrop-blur-sm md:flex-row md:items-center md:justify-between">
+          <div className="w-full max-w-xl animate-pulse">
+            <div className="h-7 w-3/4 rounded bg-slate-800/80" />
+            <div className="mt-3 h-4 w-5/6 rounded bg-slate-900/70" />
+          </div>
+          <div className="h-10 w-40 animate-pulse rounded-md bg-slate-800/70" />
+        </header>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div
+              key={`metric-skel-${index}`}
+              className="min-w-0 animate-pulse rounded-xl border border-slate-800 bg-slate-950/70 p-4 shadow-[0_8px_30px_rgba(2,6,23,0.55)] sm:p-5"
+            >
+              <div className="h-4 w-1/2 rounded bg-slate-800/80" />
+              <div className="mt-3 h-8 w-2/5 rounded bg-slate-900/70" />
+            </div>
+          ))}
+        </div>
+
+        <div className="grid min-w-0 gap-5 sm:gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="min-w-0 space-y-5 sm:space-y-6">
+            <section className="min-w-0 animate-pulse rounded-xl border border-slate-800 bg-slate-950/70 p-3 shadow-lg sm:p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="h-5 w-44 rounded bg-slate-800/80" />
+                <div className="h-6 w-20 rounded-full bg-slate-900/70" />
+              </div>
+              <div className="h-[420px] rounded-lg border border-slate-800 bg-black/60" />
+            </section>
+
+            <section className="min-w-0 animate-pulse rounded-xl border border-slate-800 bg-slate-950/70 p-3 shadow-lg sm:p-4">
+              <div className="h-5 w-40 rounded bg-slate-800/80" />
+              <div className="mt-4 space-y-2">
+                {Array.from({ length: 6 }).map((_, index) => (
+                  <div key={`row-skel-${index}`} className="h-8 rounded bg-slate-900/60" />
+                ))}
+              </div>
+            </section>
+          </div>
+
+          <aside className="min-w-0 space-y-5 sm:space-y-6">
+            <section className="min-w-0 animate-pulse rounded-xl border border-slate-800 bg-slate-950/70 p-3 shadow-lg sm:p-4">
+              <div className="mb-3 h-5 w-32 rounded bg-slate-800/80" />
+              <div className="space-y-3">
+                {Array.from({ length: 5 }).map((_, index) => (
+                  <div key={`fleet-skel-${index}`} className="h-16 rounded-lg bg-slate-900/60" />
+                ))}
+              </div>
+            </section>
+
+            <section className="min-w-0 animate-pulse rounded-xl border border-slate-800 bg-slate-950/70 p-3 shadow-lg sm:p-4">
+              <div className="mb-3 h-5 w-40 rounded bg-slate-800/80" />
+              <div className="h-40 rounded border border-slate-800 bg-slate-950" />
+            </section>
+          </aside>
+        </div>
+
+        {connectionError && <p className="text-center text-sm text-red-400">{connectionError}</p>}
+      </div>
+    );
+  }
 
   return (
-    <div className="flex flex-col gap-6 w-full max-w-7xl mx-auto p-4">
-      <header className="mb-2 flex justify-between items-center">
+    <div className="mx-auto flex w-full min-w-0 max-w-[1400px] flex-col gap-5 overflow-x-hidden px-3 py-4 sm:gap-6 sm:px-4 sm:py-6 lg:px-6">
+      <header className="flex flex-col gap-4 rounded-xl border border-slate-800 bg-slate-950/70 p-5 shadow-[0_8px_30px_rgba(2,6,23,0.6)] backdrop-blur-sm md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-800 dark:text-white">RescueRoute AI Dashboard</h1>
-          <p className="text-gray-500">Fleet Management & Mission Control</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-100 md:text-3xl">
+            RescueRoute Operations Dashboard
+          </h1>
+          <p className="mt-1 text-sm text-slate-400">
+            Live command and control for autonomous emergency response units
+          </p>
         </div>
-        <button 
-            onClick={handleAiCommand}
-            disabled={isAiLoading}
-            className={`px-6 py-3 rounded-lg font-bold text-white shadow-lg transition-all ${
-                isAiLoading ? "bg-purple-400 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-700 hover:scale-105"
-            }`}
+        <button
+          onClick={handleAiCommand}
+          disabled={isAiLoading}
+          aria-busy={isAiLoading}
+          aria-label="Run AI decision analysis"
+          className={`rounded-md px-5 py-2.5 text-sm font-semibold transition-all duration-200 ${
+            isAiLoading
+              ? "cursor-not-allowed border border-slate-700 bg-slate-800 text-slate-400"
+              : "border border-sky-500/40 bg-sky-500/20 text-sky-200 hover:border-sky-400 hover:bg-sky-500/30"
+          }`}
         >
-            {isAiLoading ? "Analyzing..." : "AI Commander: DECIDE"}
+          {isAiLoading ? "Analyzing" : "Run AI Decision"}
         </button>
       </header>
 
-      {metrics && <MetricsPanel metrics={metrics} />}
-      
-      {aiError && (
-         <div className="bg-red-900/30 border border-red-500/50 p-4 rounded-lg">
-            <p className="text-red-400 font-semibold">⚠️ AI Error: {aiError}</p>
-         </div>
+      {metrics ? (
+        <MetricsPanel metrics={metrics} />
+      ) : (
+        <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div
+              key={`metric-skel-live-${index}`}
+              className="min-w-0 animate-pulse rounded-xl border border-slate-800 bg-slate-950/70 p-4 shadow-[0_8px_30px_rgba(2,6,23,0.55)] sm:p-5"
+            >
+              <div className="h-4 w-1/2 rounded bg-slate-800/80" />
+              <div className="mt-3 h-8 w-2/5 rounded bg-slate-900/70" />
+            </div>
+          ))}
+        </div>
       )}
+
+      {aiError && <div className="rounded-lg border border-red-500/40 bg-red-950/30 p-3 text-sm text-red-300">{aiError}</div>}
 
       {aiDecision && (
-         <div className="bg-purple-900/30 border border-purple-500/40 p-4 rounded-lg shadow-lg backdrop-blur-sm">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-2xl">🤖</span>
-              <h3 className="text-purple-300 font-bold text-lg">AI Commander Orders</h3>
-            </div>
-            <p className="text-gray-300 mb-3"><strong className="text-purple-300">Reasoning:</strong> {aiDecision.reasoning}</p>
-            {aiDecision.priority_mission_id && (
-                <div className="bg-red-900/30 border border-red-500/30 rounded-md px-3 py-2 inline-block">
-                  <span className="text-red-400 font-bold text-sm">🎯 Priority Target: {aiDecision.priority_mission_id}</span>
-                </div>
-            )}
-            {aiDecision.reassignments.length > 0 && (
-                <div className="mt-3">
-                  <p className="text-purple-300 font-semibold text-sm mb-1">Reassignments:</p>
-                  <ul className="space-y-1">
-                    {aiDecision.reassignments.map((r, i) => (
-                        <li key={i} className="text-sm text-gray-400 bg-gray-800/50 rounded px-2 py-1">
-                          🔄 Robot <span className="text-white font-semibold">{r.robot_id}</span> → Mission <span className="text-amber-400 font-semibold">{r.new_mission_id}</span>
-                        </li>
-                    ))}
-                  </ul>
-                </div>
-            )}
-         </div>
+        <div className="rounded-lg border border-sky-500/30 bg-slate-900/80 p-4">
+          <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-sky-300">AI Decision Output</h3>
+          <p className="text-sm text-slate-300">{aiDecision.reasoning}</p>
+          {aiDecision.priority_mission_id && (
+            <p className="mt-2 text-sm text-amber-300">Priority Mission: {aiDecision.priority_mission_id}</p>
+          )}
+          {aiDecision.reassignments.length > 0 && (
+            <ul className="mt-3 space-y-1 text-sm text-slate-300">
+              {aiDecision.reassignments.map((reassignment, index) => (
+                <li key={`${reassignment.robot_id}-${reassignment.new_mission_id}-${index}`}>
+                  Robot {reassignment.robot_id} reassigned to mission {reassignment.new_mission_id}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
 
-      <div className="flex flex-col lg:flex-row gap-6">
-        <div className="flex-1 flex flex-col gap-6">
-          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
-            <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-bold dark:text-white">Live Operations Map</h2>
-                <span className="text-sm bg-gray-100 px-3 py-1 rounded-full text-gray-600">Step: {data.step}</span>
+      <div className="grid min-w-0 gap-5 sm:gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0 space-y-5 sm:space-y-6">
+          <section className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/70 p-3 shadow-lg sm:p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-100">Live Operations Map</h2>
+              <span className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-xs text-slate-300">
+                Step {data.step}
+              </span>
             </div>
-            <div className="flex justify-center bg-gray-50 rounded border border-gray-100 p-4">
-                <MapVisualizer grid={data.grid} robots={data.robots} />
+            <div className="rounded-lg border border-slate-800 bg-black/80 p-2">
+              <MapVisualizer grid={data.grid} robots={data.robots} />
             </div>
-          </div>
-          
+          </section>
+
           <MissionQueue missions={data.active_missions || []} />
         </div>
 
-        <div className="w-full lg:w-96 flex flex-col gap-6">
-          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
-            <h2 className="text-xl font-bold mb-4 dark:text-white">Fleet Status</h2>
+        <aside className="min-w-0 space-y-5 sm:space-y-6">
+          <section className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/70 p-3 shadow-lg sm:p-4">
+            <h2 className="mb-3 text-lg font-semibold text-slate-100">Fleet Status</h2>
             <RobotList robots={data.robots} />
-          </div>
-          
-          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
-            <h2 className="text-xl font-bold mb-2 dark:text-white">System Logs</h2>
-            <div className="h-48 overflow-y-auto w-full bg-gray-900 text-green-400 font-mono text-xs p-3 rounded">
-                <p>[SYSTEM] Simulation started</p>
-                <p>[INFO] Connected to backend</p>
-                <p>[INFO] Monitoring {data.robots.length} active units</p>
-                {data.active_missions?.map(m => (
-                    <p key={m.id}>[MISSION] {m.id} assigned to {m.assigned_robot || 'pending'}</p>
-                ))}
-                {aiDecision && <p className="text-purple-400">[AI] New orders received</p>}
+          </section>
+
+          <section className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/70 p-3 shadow-lg sm:p-4">
+            <h2 className="mb-3 text-lg font-semibold text-slate-100">System Event Log</h2>
+            <div
+              className="max-h-[260px] overflow-y-auto rounded border border-slate-800 bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-300 sm:max-h-[320px] lg:max-h-none lg:overflow-visible"
+              role="log"
+              aria-live="polite"
+            >
+              {eventLogs.length === 0 && <p>No events yet. Waiting for stream updates...</p>}
+              {eventLogs.map((entry, index) => (
+                <p key={`${entry}-${index}`} className="break-words border-b border-slate-900 py-0.5 last:border-b-0">
+                  {entry}
+                </p>
+              ))}
             </div>
-          </div>
-        </div>
+            {connectionError && <p className="mt-2 text-xs text-red-400">{connectionError}</p>}
+          </section>
+        </aside>
       </div>
     </div>
   );

@@ -9,11 +9,10 @@ interface Props {
 }
 
 const statusConfig: Record<string, { bg: string; text: string }> = {
-  IDLE:     { bg: "bg-gray-500/20",   text: "text-gray-300" },
-  MOVING:   { bg: "bg-emerald-500/20", text: "text-emerald-400" },
-  CHARGING: { bg: "bg-amber-500/20",  text: "text-amber-400" },
-  DEAD:     { bg: "bg-red-500/20",    text: "text-red-400" },
-  BUSY:     { bg: "bg-blue-500/20",   text: "text-blue-400" },
+  IDLE: { bg: "bg-slate-500/20", text: "text-slate-300" },
+  MOVING: { bg: "bg-emerald-500/20", text: "text-emerald-300" },
+  CHARGING: { bg: "bg-amber-500/20", text: "text-amber-300" },
+  DEAD: { bg: "bg-red-500/20", text: "text-red-300" },
 };
 
 function getBatteryColor(battery: number) {
@@ -25,27 +24,30 @@ function getBatteryColor(battery: number) {
 export default function RobotList({ robots }: Props) {
   return (
     <div className="space-y-3">
-      {robots.length === 0 && <p className="text-gray-500">No active robots</p>}
+      {robots.length === 0 && <p className="text-sm text-slate-400">No active robots</p>}
       {robots.map((robot) => {
-        const cfg = statusConfig[robot.status] || statusConfig.IDLE;
+        const normalizedStatus = (robot.status || "IDLE").toUpperCase();
+        const cfg = statusConfig[normalizedStatus] || statusConfig.IDLE;
         const clampedBattery = Math.min(100, Math.max(0, robot.battery));
+
         return (
-          <div key={robot.id} className="p-3 border border-gray-700 rounded-lg bg-gray-800/50 backdrop-blur-sm">
-            <div className="flex justify-between items-center mb-2">
-              <span className="font-bold text-white">{robot.id}</span>
-              <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${cfg.bg} ${cfg.text}`}>
-                {robot.status}
+          <div
+            key={robot.id}
+            className="rounded-lg border border-slate-800 bg-slate-900/65 p-3 transition-colors duration-200 hover:border-slate-700"
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <span className="font-semibold text-slate-100">Robot {robot.id}</span>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${cfg.bg} ${cfg.text}`}>
+                {normalizedStatus}
               </span>
             </div>
-            <div className="w-full bg-gray-700 rounded-full h-2">
+            <div className="h-2 w-full rounded-full bg-slate-800">
               <div
                 className={`h-2 rounded-full transition-all duration-500 ${getBatteryColor(clampedBattery)}`}
                 style={{ width: `${clampedBattery}%` }}
               />
             </div>
-            <div className="text-xs text-right mt-1 text-gray-400">
-              {clampedBattery.toFixed(0)}% Battery
-            </div>
+            <div className="mt-1 text-right text-xs text-slate-400">{clampedBattery.toFixed(0)}% battery</div>
           </div>
         );
       })}
