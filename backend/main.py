@@ -302,6 +302,7 @@ async def get_metrics():
         async with state_lock:
             robots = list(current_state.robots)
             completed_count = len(current_state.completed_missions)
+            simulator_metrics = dict(latest_simulator_metrics)
 
         active_count = sum(1 for robot in robots if robot.status != "DEAD")
         current_total_battery = sum(max(0.0, min(100.0, robot.battery)) for robot in robots)
@@ -312,14 +313,13 @@ async def get_metrics():
         return Metrics(
             active_robots=active_count,
             completed_missions=completed_count,
-            avg_delivery_time=round(latest_simulator_metrics["avg_completion_time"], 1),
+            avg_delivery_time=round(simulator_metrics["avg_completion_time"], 1),
             total_battery_used=round(total_used, 1),
             fleet_battery=round(fleet_battery, 1),
             total_distance_traveled=round(
-                latest_simulator_metrics["total_distance_traveled"], 1
+                simulator_metrics["total_distance_traveled"], 1
             ),
         )
     except Exception as exc:
         logger.error("Error fetching metrics: %s", exc)
         raise HTTPException(status_code=500, detail="Internal Server Error")
-

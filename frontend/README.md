@@ -10,7 +10,7 @@ npm run dev
 ```
 
 ## Environment
-- `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`
+- Create a `.env.local` file with `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000` (no quotes). Restart dev server after changes.
 
 ## Notes
 - Dashboard connects via SSE to `/api/v1/stream`.

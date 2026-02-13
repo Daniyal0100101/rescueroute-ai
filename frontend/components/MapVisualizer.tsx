@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 interface Props {
   grid: {
@@ -20,12 +20,12 @@ interface Props {
 export default function MapVisualizer({ grid, robots }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+  const patternId = useId();
   const maxCanvas = 720;
   const baseSize = containerWidth > 0 ? Math.min(maxCanvas, containerWidth - 2) : maxCanvas;
   const cellSize = Math.max(4, Math.floor(baseSize / Math.max(grid.width, grid.height, 1)));
   const mapW = grid.width * cellSize;
   const mapH = grid.height * cellSize;
-  const patternId = "grid-pattern";
 
   useEffect(() => {
     const node = containerRef.current;

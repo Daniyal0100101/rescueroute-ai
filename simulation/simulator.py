@@ -369,7 +369,11 @@ class SimulationEngine:
                 continue
 
             if robot.battery < LOW_BATTERY_THRESHOLD and not at_station:
-                self._release_mission(robot)
+                if robot.status != "idle":
+                    continue
+                if robot.mission_id is not None:
+                    continue
+
                 nearest_station = min(
                     stations, key=lambda p: abs(p[0] - robot.x) + abs(p[1] - robot.y)
                 )

@@ -120,6 +120,7 @@ export default function Dashboard() {
     fetchInitialData();
 
     const eventSource = new EventSource(`${API_BASE}/api/v1/stream`);
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     eventSource.onopen = () => {
       setConnectionError(null);
@@ -169,10 +170,13 @@ export default function Dashboard() {
       setConnectionError(`Stream disconnected from ${API_BASE}`);
       appendLog("WARN Stream disconnected; retrying in 3s");
       eventSource.close();
-      setTimeout(() => setReconnectAttempt((n) => n + 1), 3000);
+      reconnectTimer = setTimeout(() => setReconnectAttempt((n) => n + 1), 3000);
     };
 
     return () => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
       eventSource.close();
     };
   }, [reconnectAttempt]);
