@@ -83,3 +83,5 @@ Live deployment at `http://45.76.69.45` uses an external Nginx reverse proxy on 
 - Architecture: `docs/ARCHITECTURE.md`
 - Backend details: `backend/README.md`
 - Frontend details: `frontend/README.md`
+
+Core system is built by Daniyal Asif (full-stack, AI integration, simulation engine, frontend dashboard, deployment) With ❤️
