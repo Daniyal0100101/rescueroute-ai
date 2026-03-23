@@ -2,6 +2,10 @@
 
 Autonomous disaster response operations platform with live simulation, backend orchestration, and AI-assisted mission decisions.
 
+
+### 🚀 Key Achievements
+- **Engineered a 3-tier microservice architecture (2,100+ LOC) with 11 API endpoints, achieving real-time state synchronization via 1-second SSE polling for a 2,500-cell simulation grid, delivered in a 48-hour hackathon window.**
+
 ## Services
 - Frontend dashboard: `http://localhost:3000`
 - Backend API + SSE: `http://localhost:8000`
